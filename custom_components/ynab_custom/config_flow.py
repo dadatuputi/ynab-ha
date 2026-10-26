@@ -472,7 +472,8 @@ class OptionsFlow(config_entries.OptionsFlow):
                     title=instance_name,
                 )
 
-            return self.async_create_entry(title="", data={})
+            # The flow's result becomes entry.options, so it must carry them all
+            return self.async_create_entry(title="", data=new_options)
 
         # Fetch current accounts and categories
         try:

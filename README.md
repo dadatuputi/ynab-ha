@@ -47,7 +47,7 @@
 - **Category Sensors**: Track each category’s balances and associated attributes.
 - **Custom Budget “Instance Name”**: Each budget can have a unique prefix (e.g., “Mel,” “Jamie”) to avoid entity ID collisions. (Defaults to the YNAB budget name)
 - **Currency Selection**: Choose your preferred currency (USD, EUR, etc.).
-- **Move Money**: Parent-only services to move money between categories or transfer between accounts.
+- **Move Money**: Permissioned services to move money between categories or transfer between accounts, limited to the Home Assistant users you choose.
 - **Monthly Summary Sensors**: Retrieve current month's summary data with associated attributes (e.g., `Budgeted`, `Activity`, `To Be Budgeted`, `Age of Money`).
 
 ---

@@ -1,4 +1,4 @@
-"""Tests for the money movement services and their user allowlist."""
+"""Tests for the permissioned money movement services."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -21,24 +21,24 @@ from custom_components.ynab_custom.const import (
 from custom_components.ynab_custom.services import async_register_services
 
 BUDGET = "11111111-1111-1111-1111-111111111111"
-KID = "22222222-2222-2222-2222-222222222222"
-PARENT = "33333333-3333-3333-3333-333333333333"
+SAVINGS = "22222222-2222-2222-2222-222222222222"
+ALLOWANCE = "33333333-3333-3333-3333-333333333333"
 RTA = "44444444-4444-4444-4444-444444444444"
 CHECKING = "55555555-5555-5555-5555-555555555555"
-KID_ACCOUNT = "66666666-6666-6666-6666-666666666666"
+CASH = "66666666-6666-6666-6666-666666666666"
 TRACKING = "77777777-7777-7777-7777-777777777777"
 
 
 @pytest.fixture
 async def setup(hass):
     """Register the services against a fake coordinator and sensor entities."""
-    parent = await hass.auth.async_create_user("Julie")
-    kid = await hass.auth.async_create_user("Kid")
+    allowed = await hass.auth.async_create_user("Julie")
+    other = await hass.auth.async_create_user("Sam")
 
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={"budget_id": BUDGET, "budget_name": "Law"},
-        options={CONF_MONEY_MOVERS: [parent.id]},
+        options={CONF_MONEY_MOVERS: [allowed.id]},
     )
     entry.add_to_hass(hass)
 
@@ -58,14 +58,14 @@ async def setup(hass):
         async_request_refresh=AsyncMock(),
         data={
             "categories": [
-                {"id": KID, "name": "Kid Savings"},
-                {"id": PARENT, "name": "Allowance"},
+                {"id": SAVINGS, "name": "Savings"},
+                {"id": ALLOWANCE, "name": "Allowance"},
                 {"id": RTA, "name": "Inflow: Ready to Assign"},
             ],
             "accounts": [
-                {"id": CHECKING, "name": "Checking", "on_budget": True},
-                {"id": KID_ACCOUNT, "name": "Kid Cash", "on_budget": True},
-                {"id": TRACKING, "name": "Kid Brokerage", "on_budget": False},
+                {"id": CHECKING, "name": "Checking", "type": "checking", "on_budget": True, "transfer_payee_id": "payee-checking"},
+                {"id": CASH, "name": "Cash", "type": "cash", "on_budget": True, "transfer_payee_id": "payee-cash"},
+                {"id": TRACKING, "name": "Brokerage", "type": "otherAsset", "on_budget": False, "transfer_payee_id": "payee-brokerage"},
             ],
         },
     )
@@ -74,15 +74,15 @@ async def setup(hass):
     registry = er.async_get(hass)
     entities = {}
     for name, ynab_id in {
-        "kid": KID, "parent": PARENT, "rta": RTA,
-        "checking": CHECKING, "kid_account": KID_ACCOUNT, "tracking": TRACKING,
+        "savings": SAVINGS, "allowance": ALLOWANCE, "rta": RTA,
+        "checking": CHECKING, "cash": CASH, "tracking": TRACKING,
     }.items():
         entities[name] = registry.async_get_or_create(
             "sensor", DOMAIN, f"ynab_Law_{ynab_id}", config_entry=entry, suggested_object_id=name
         ).entity_id
 
     async_register_services(hass)
-    return SimpleNamespace(api=api, coordinator=coordinator, parent=parent, kid=kid, e=entities)
+    return SimpleNamespace(api=api, coordinator=coordinator, allowed=allowed, other=other, e=entities)
 
 
 def _call(hass, service, data, user):
@@ -92,11 +92,11 @@ def _call(hass, service, data, user):
     )
 
 
-async def test_parent_moves_between_categories(hass, setup):
+async def test_allowed_user_moves_between_categories(hass, setup):
     api = setup.api
     api.get_month_category.side_effect = [
         {"budgeted": 10_000, "balance": 20_000},  # from: Allowance
-        {"budgeted": 5_000, "balance": 7_000},  # to: Kid Savings
+        {"budgeted": 5_000, "balance": 7_000},  # to: Savings
     ]
     api.set_month_category_budgeted.side_effect = [
         {"balance": 15_000}, {"balance": 12_000},
@@ -105,29 +105,29 @@ async def test_parent_moves_between_categories(hass, setup):
     hass.bus.async_listen(EVENT_MONEY_MOVED, events.append)
 
     result = await _call(hass, SERVICE_MOVE_CATEGORY_MONEY, {
-        "from_category": setup.e["parent"], "to_category": setup.e["kid"], "amount": 5,
-    }, setup.parent)
+        "from_category": setup.e["allowance"], "to_category": setup.e["savings"], "amount": 5,
+    }, setup.allowed)
 
-    api.set_month_category_budgeted.assert_any_await(BUDGET, PARENT, 5_000)
-    api.set_month_category_budgeted.assert_any_await(BUDGET, KID, 10_000)
+    api.set_month_category_budgeted.assert_any_await(BUDGET, ALLOWANCE, 5_000)
+    api.set_month_category_budgeted.assert_any_await(BUDGET, SAVINGS, 10_000)
     assert result["to_balance"] == 12.0 and result["user"] == "Julie"
     await hass.async_block_till_done()
-    assert events[0].data["to"] == "Kid Savings"
+    assert events[0].data["to"] == "Savings"
     setup.coordinator.async_request_refresh.assert_awaited()
 
 
-async def test_kid_is_refused(hass, setup):
+async def test_user_not_on_list_is_refused(hass, setup):
     with pytest.raises(Unauthorized):
         await _call(hass, SERVICE_MOVE_CATEGORY_MONEY, {
-            "to_category": setup.e["kid"], "amount": 5,
-        }, setup.kid)
+            "to_category": setup.e["savings"], "amount": 5,
+        }, setup.other)
     setup.api.set_month_category_budgeted.assert_not_awaited()
 
 
 async def test_call_without_user_is_refused(hass, setup):
     with pytest.raises(Unauthorized):
         await _call(hass, SERVICE_TRANSFER_ACCOUNT_MONEY, {
-            "from_account": setup.e["checking"], "to_account": setup.e["kid_account"], "amount": 5,
+            "from_account": setup.e["checking"], "to_account": setup.e["cash"], "amount": 5,
         }, None)
     setup.api.create_transaction.assert_not_awaited()
 
@@ -136,8 +136,8 @@ async def test_empty_allowlist_blocks_everyone(hass, setup):
     hass.config_entries.async_update_entry(setup.coordinator.entry, options={})
     with pytest.raises(Unauthorized):
         await _call(hass, SERVICE_MOVE_CATEGORY_MONEY, {
-            "to_category": setup.e["kid"], "amount": 5,
-        }, setup.parent)
+            "to_category": setup.e["savings"], "amount": 5,
+        }, setup.allowed)
 
 
 async def test_ready_to_assign_is_the_default_side(hass, setup):
@@ -146,10 +146,10 @@ async def test_ready_to_assign_is_the_default_side(hass, setup):
     api.set_month_category_budgeted.return_value = {"balance": 3_000}
 
     result = await _call(hass, SERVICE_MOVE_CATEGORY_MONEY, {
-        "from_category": setup.e["kid"], "to_category": setup.e["rta"], "amount": 5,
-    }, setup.parent)
+        "from_category": setup.e["savings"], "to_category": setup.e["rta"], "amount": 5,
+    }, setup.allowed)
 
-    api.set_month_category_budgeted.assert_awaited_once_with(BUDGET, KID, 3_000)
+    api.set_month_category_budgeted.assert_awaited_once_with(BUDGET, SAVINGS, 3_000)
     assert result["to"] == "Ready to Assign"
 
 
@@ -158,15 +158,15 @@ async def test_overdraw_is_refused_unless_allowed(hass, setup):
     api.get_month.return_value = {"to_be_budgeted": 1_000}
     with pytest.raises(ServiceValidationError, match=r"\$1.00"):
         await _call(hass, SERVICE_MOVE_CATEGORY_MONEY, {
-            "to_category": setup.e["kid"], "amount": 5,
-        }, setup.parent)
+            "to_category": setup.e["savings"], "amount": 5,
+        }, setup.allowed)
 
     api.get_month_category.return_value = {"budgeted": 0, "balance": 0}
     api.set_month_category_budgeted.return_value = {"balance": 5_000}
     await _call(hass, SERVICE_MOVE_CATEGORY_MONEY, {
-        "to_category": setup.e["kid"], "amount": 5, "allow_overdraw": True,
-    }, setup.parent)
-    api.set_month_category_budgeted.assert_awaited_once_with(BUDGET, KID, 5_000)
+        "to_category": setup.e["savings"], "amount": 5, "allow_overdraw": True,
+    }, setup.allowed)
+    api.set_month_category_budgeted.assert_awaited_once_with(BUDGET, SAVINGS, 5_000)
 
 
 async def test_failed_second_write_restores_source(hass, setup):
@@ -178,24 +178,22 @@ async def test_failed_second_write_restores_source(hass, setup):
 
     with pytest.raises(HomeAssistantError, match="rejected"):
         await _call(hass, SERVICE_MOVE_CATEGORY_MONEY, {
-            "from_category": setup.e["parent"], "to_category": setup.e["kid"], "amount": 5,
-        }, setup.parent)
-    assert api.set_month_category_budgeted.await_args_list[-1].args == (BUDGET, PARENT, 10_000)
+            "from_category": setup.e["allowance"], "to_category": setup.e["savings"], "amount": 5,
+        }, setup.allowed)
+    assert api.set_month_category_budgeted.await_args_list[-1].args == (BUDGET, ALLOWANCE, 10_000)
 
 
-async def test_parent_transfers_between_accounts(hass, setup):
+async def test_allowed_user_transfers_between_accounts(hass, setup):
     api = setup.api
-    api.get_account.side_effect = [
-        {"balance": 100_000}, {"transfer_payee_id": "payee-kid"},
-    ]
+    api.get_account.return_value = {"balance": 100_000}
     result = await _call(hass, SERVICE_TRANSFER_ACCOUNT_MONEY, {
-        "from_account": setup.e["checking"], "to_account": setup.e["kid_account"], "amount": 12.5,
-    }, setup.parent)
+        "from_account": setup.e["checking"], "to_account": setup.e["cash"], "amount": 12.5,
+    }, setup.allowed)
 
     txn = api.create_transaction.await_args.args[1]
     assert txn["account_id"] == CHECKING
     assert txn["amount"] == -12_500
-    assert txn["payee_id"] == "payee-kid"
+    assert txn["payee_id"] == "payee-cash"
     assert txn["memo"] == "Moved by Julie via Home Assistant"
     assert "category_id" not in txn
     assert result["transaction_id"] == "txn"
@@ -205,14 +203,14 @@ async def test_tracking_transfer_needs_category(hass, setup):
     with pytest.raises(ServiceValidationError, match="category"):
         await _call(hass, SERVICE_TRANSFER_ACCOUNT_MONEY, {
             "from_account": setup.e["checking"], "to_account": setup.e["tracking"], "amount": 5,
-        }, setup.parent)
+        }, setup.allowed)
 
 
 async def test_wrong_sensor_kind_is_rejected(hass, setup):
     with pytest.raises(ServiceValidationError, match="account sensor"):
         await _call(hass, SERVICE_TRANSFER_ACCOUNT_MONEY, {
-            "from_account": setup.e["kid"], "to_account": setup.e["kid_account"], "amount": 5,
-        }, setup.parent)
+            "from_account": setup.e["savings"], "to_account": setup.e["cash"], "amount": 5,
+        }, setup.allowed)
 
 
 async def test_integration_setup_registers_services(hass):
@@ -221,3 +219,35 @@ async def test_integration_setup_registers_services(hass):
     assert await async_setup_component(hass, DOMAIN, {})
     assert hass.services.has_service(DOMAIN, SERVICE_MOVE_CATEGORY_MONEY)
     assert hass.services.has_service(DOMAIN, SERVICE_TRANSFER_ACCOUNT_MONEY)
+
+
+async def test_network_error_on_second_write_restores_source(hass, setup):
+    api = setup.api
+    api.get_month_category.side_effect = [
+        {"budgeted": 10_000, "balance": 20_000}, {"budgeted": 0, "balance": 0},
+    ]
+    api.set_month_category_budgeted.side_effect = [
+        {}, YNABApiError("request failed: timeout"), YNABApiError("request failed: timeout"),
+    ]
+
+    with pytest.raises(HomeAssistantError, match="could not be restored"):
+        await _call(hass, SERVICE_MOVE_CATEGORY_MONEY, {
+            "from_category": setup.e["allowance"], "to_category": setup.e["savings"], "amount": 5,
+        }, setup.allowed)
+
+
+async def test_credit_card_source_skips_balance_check(hass, setup):
+    setup.coordinator.data["accounts"][0]["type"] = "creditCard"
+    await _call(hass, SERVICE_TRANSFER_ACCOUNT_MONEY, {
+        "from_account": setup.e["checking"], "to_account": setup.e["cash"], "amount": 5,
+    }, setup.allowed)
+    setup.api.get_account.assert_not_awaited()
+    setup.api.create_transaction.assert_awaited_once()
+
+
+async def test_account_without_transfer_payee_is_rejected(hass, setup):
+    del setup.coordinator.data["accounts"][1]["transfer_payee_id"]
+    with pytest.raises(ServiceValidationError, match="transfers into Cash"):
+        await _call(hass, SERVICE_TRANSFER_ACCOUNT_MONEY, {
+            "from_account": setup.e["checking"], "to_account": setup.e["cash"], "amount": 5,
+        }, setup.allowed)

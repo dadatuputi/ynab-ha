@@ -1,6 +1,7 @@
 """YNAB API Handler."""
 
 import aiohttp
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from collections import deque
@@ -227,16 +228,21 @@ class YNABApi:
         """
         self._track_request()
 
-        async with aiohttp.ClientSession() as session:
-            async with session.request(method, url, headers=self.headers, json=payload) as response:
-                if response.status in (200, 201):
-                    data = await response.json()
-                    return data.get("data", {})
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+                async with session.request(method, url, headers=self.headers, json=payload) as response:
+                    if response.status in (200, 201):
+                        data = await response.json()
+                        return data.get("data", {})
 
-                try:
-                    error = (await response.json()).get("error", {})
-                    detail = error.get("detail") or error.get("name") or ""
-                except Exception:
-                    detail = ""
-                _LOGGER.error("YNAB API error: %s %s - %s %s", response.status, detail, method, url)
-                raise YNABApiError(f"{response.status} - {detail}".strip(" -"))
+                    try:
+                        error = (await response.json()).get("error", {})
+                        detail = error.get("detail") or error.get("name") or ""
+                    except Exception:
+                        detail = ""
+        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+            _LOGGER.error("YNAB API request failed: %s - %s %s", err, method, url)
+            raise YNABApiError(f"request failed: {err or type(err).__name__}") from err
+
+        _LOGGER.error("YNAB API error: %s %s - %s %s", response.status, detail, method, url)
+        raise YNABApiError(f"{response.status} - {detail}".strip(" -"))

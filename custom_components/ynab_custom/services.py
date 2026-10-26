@@ -35,6 +35,12 @@ _LOGGER = logging.getLogger(__name__)
 YNAB_ID_LENGTH = 36
 MEMO_MAX_LENGTH = 200
 
+# Debt accounts carry negative balances, so "available" does not apply.
+LIABILITY_ACCOUNT_TYPES = {
+    "creditCard", "lineOfCredit", "otherLiability", "mortgage", "autoLoan",
+    "studentLoan", "personalLoan", "medicalDebt", "otherDebt",
+}
+
 AMOUNT = vol.All(vol.Coerce(float), vol.Range(min=0.01, max=1_000_000))
 
 MOVE_CATEGORY_MONEY_SCHEMA = vol.Schema(
@@ -182,12 +188,19 @@ async def _move_category_money(hass: HomeAssistant, call: ServiceCall) -> Servic
                 target_after = await api.set_month_category_budgeted(
                     budget_id, target["id"], target_now.get("budgeted", 0) + amount
                 )
-            except YNABApiError:
+            except YNABApiError as err:
                 if source is not None:
                     # Put the source back so the money is not left in limbo.
-                    await api.set_month_category_budgeted(
-                        budget_id, source["id"], source_now.get("budgeted", 0)
-                    )
+                    try:
+                        await api.set_month_category_budgeted(
+                            budget_id, source["id"], source_now.get("budgeted", 0)
+                        )
+                    except YNABApiError as rollback_err:
+                        raise YNABApiError(
+                            f"{err}; {source_label} could not be restored "
+                            f"({rollback_err}), so {_format(amount, symbol)} "
+                            "is now in Ready to Assign"
+                        ) from err
                 raise
     except YNABApiError as err:
         raise HomeAssistantError(f"YNAB rejected the move: {err}") from err
@@ -244,19 +257,23 @@ async def _transfer_account_money(hass: HomeAssistant, call: ServiceCall) -> Ser
 
     memo = call.data.get("memo") or f"Moved by {user.name} via Home Assistant"
 
-    try:
-        source_now = await api.get_account(budget_id, source["id"])
-        if amount > source_now.get("balance", 0) and not call.data["allow_overdraw"]:
-            raise ServiceValidationError(
-                f"Only {_format(source_now.get('balance', 0), symbol)} available in {source['name']}"
-            )
+    transfer_payee_id = target.get("transfer_payee_id")
+    if not transfer_payee_id:
+        raise ServiceValidationError(f"YNAB does not allow transfers into {target['name']}")
 
-        target_now = await api.get_account(budget_id, target["id"])
+    try:
+        if source.get("type") not in LIABILITY_ACCOUNT_TYPES and not call.data["allow_overdraw"]:
+            source_now = await api.get_account(budget_id, source["id"])
+            if amount > source_now.get("balance", 0):
+                raise ServiceValidationError(
+                    f"Only {_format(source_now.get('balance', 0), symbol)} available in {source['name']}"
+                )
+
         transaction = {
             "account_id": source["id"],
             "date": dt_util.now().date().isoformat(),
             "amount": -amount,
-            "payee_id": target_now["transfer_payee_id"],
+            "payee_id": transfer_payee_id,
             "memo": memo[:MEMO_MAX_LENGTH],
             "cleared": "cleared",
             "approved": True,
