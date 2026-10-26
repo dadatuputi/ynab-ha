@@ -20,6 +20,7 @@ PLATFORMS = ["sensor"]
 
 SERVICE_MOVE_CATEGORY_MONEY = "move_category_money"
 SERVICE_TRANSFER_ACCOUNT_MONEY = "transfer_account_money"
+SERVICE_GET_CATEGORY_HISTORY = "get_category_history"
 EVENT_MONEY_MOVED = f"{DOMAIN}_money_moved"
 READY_TO_ASSIGN_NAMES = ("Inflow: Ready to Assign", "Ready to Assign")
 

@@ -18,6 +18,7 @@ from custom_components.ynab_custom.const import (
     SERVICE_MOVE_CATEGORY_MONEY,
     SERVICE_TRANSFER_ACCOUNT_MONEY,
 )
+from custom_components.ynab_custom.ledger import CategoryLedger
 from custom_components.ynab_custom.services import async_register_services
 
 BUDGET = "11111111-1111-1111-1111-111111111111"
@@ -55,6 +56,8 @@ async def setup(hass):
         budget_id=BUDGET,
         budget_name="Law",
         currency_symbol="$",
+        ledger=CategoryLedger(hass, entry.entry_id, "$"),
+        get_current_month=lambda: "2026-10-01",
         async_request_refresh=AsyncMock(),
         data={
             "categories": [
@@ -114,6 +117,20 @@ async def test_allowed_user_moves_between_categories(hass, setup):
     await hass.async_block_till_done()
     assert events[0].data["to"] == "Savings"
     setup.coordinator.async_request_refresh.assert_awaited()
+
+    ledger = setup.coordinator.ledger
+    [moved_in] = ledger.entries(SAVINGS)
+    assert moved_in["kind"] == "move" and moved_in["by"] == "Julie"
+    assert moved_in["amount"] == 5.0 and moved_in["balance"] == 12.0
+    assert moved_in["detail"] == "From Allowance"
+    assert ledger.entries(ALLOWANCE)[0]["amount"] == -5.0
+
+    history = await hass.services.async_call(
+        DOMAIN, "get_category_history", {"category": setup.e["savings"]},
+        blocking=True, return_response=True,
+    )
+    assert history["category"] == "Savings"
+    assert history["changes"] == [moved_in]
 
 
 async def test_user_not_on_list_is_refused(hass, setup):

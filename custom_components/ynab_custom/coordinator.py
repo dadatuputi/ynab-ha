@@ -8,7 +8,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.helpers.storage import Store
 from homeassistant.config_entries import ConfigEntry
 from .api import YNABApi
-from .const import DOMAIN, CONF_SELECTED_ACCOUNTS, CONF_SELECTED_CATEGORIES, CONF_CURRENCY, CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL, get_currency_symbol
+from .ledger import CategoryLedger
+from .const import DOMAIN, CONF_SELECTED_ACCOUNTS, CONF_SELECTED_CATEGORIES, CONF_CURRENCY, CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL, READY_TO_ASSIGN_NAMES, get_currency_symbol
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -80,6 +81,10 @@ class YNABDataUpdateCoordinator(DataUpdateCoordinator):
         # Fetch the currency symbol from the config entry
         self.currency_symbol = get_currency_symbol(self.entry.data.get(CONF_CURRENCY, "USD"))  # Convert to correct symbol
 
+        # Why each category's balance changed, kept beyond the recorder's purge
+        self.ledger = CategoryLedger(hass, entry.entry_id, self.currency_symbol)
+        self._changed_transactions = []
+
 
 
         super().__init__(
@@ -95,6 +100,7 @@ class YNABDataUpdateCoordinator(DataUpdateCoordinator):
     async def async_load_persistent_data(self):
         """Load persistent data during coordinator initialization."""
         await self._load_persistent_data()
+        await self.ledger.async_load()
 
     def get_current_month(self):
         """Returns the current month in YYYY-MM-01 format."""
@@ -169,6 +175,7 @@ class YNABDataUpdateCoordinator(DataUpdateCoordinator):
             return self.transaction_cache
 
         changed = response.get("transactions", [])
+        self._changed_transactions = changed
 
         if self.transaction_knowledge is None:
             merged = {t["id"]: t for t in changed}
@@ -218,6 +225,8 @@ class YNABDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug(f"Monthly summary fetch failed (non-critical): {e}")
                 monthly_summary = {}
             
+            full_refresh = self.transaction_knowledge is None
+            self._changed_transactions = []
             transactions = await self.api.get_transactions(
                 self.budget_id, self.transaction_knowledge
             )
@@ -260,6 +269,11 @@ class YNABDataUpdateCoordinator(DataUpdateCoordinator):
                 c for c_group in categories.get("category_groups", [])
                 for c in c_group.get("categories", []) if c["id"] in self.selected_categories
             ]
+
+            self.ledger.observe(
+                [c for c in budget_data["categories"] if c.get("name") not in READY_TO_ASSIGN_NAMES],
+                current_month, self._changed_transactions, full_refresh
+            )
 
             # Store the monthly summary data
             budget_data["monthly_summary"] = monthly_summary
