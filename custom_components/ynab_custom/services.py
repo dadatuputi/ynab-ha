@@ -1,10 +1,11 @@
 """Services for moving money in YNAB from Home Assistant.
 
-Both services change real budget data, so every call is checked against the
-per-budget allowlist of Home Assistant users set in the integration options.
-Calls without a user behind them (automations, the developer tools of a
-system user) are refused, as are calls from anyone not on the list. An empty
-list means nobody can move money.
+The services that move money change real budget data, so every call is
+checked against the per-budget allowlist of Home Assistant users set in the
+integration options. Calls without a user behind them (automations, the
+developer tools of a system user) are refused, as are calls from anyone not
+on the list. An empty list means nobody can move money. Each move is also
+written to the category ledger with the name of the user who made it.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from .const import (
     DOMAIN,
     EVENT_MONEY_MOVED,
     READY_TO_ASSIGN_NAMES,
+    SERVICE_GET_CATEGORY_HISTORY,
     SERVICE_MOVE_CATEGORY_MONEY,
     SERVICE_TRANSFER_ACCOUNT_MONEY,
 )
@@ -49,6 +51,13 @@ MOVE_CATEGORY_MONEY_SCHEMA = vol.Schema(
         vol.Optional("to_category"): cv.entity_id,
         vol.Required("amount"): AMOUNT,
         vol.Optional("allow_overdraw", default=False): cv.boolean,
+    }
+)
+
+GET_CATEGORY_HISTORY_SCHEMA = vol.Schema(
+    {
+        vol.Required("category"): cv.entity_id,
+        vol.Optional("limit", default=50): vol.All(vol.Coerce(int), vol.Range(min=1, max=2000)),
     }
 )
 
@@ -206,6 +215,15 @@ async def _move_category_money(hass: HomeAssistant, call: ServiceCall) -> Servic
         raise HomeAssistantError(f"YNAB rejected the move: {err}") from err
 
     target_label = target["name"] if target is not None else "Ready to Assign"
+    month = coordinator.get_current_month()
+    if source_after:
+        coordinator.ledger.record_move(
+            source["id"], -amount, user.name, f"To {target_label}", source_after, month
+        )
+    if target_after:
+        coordinator.ledger.record_move(
+            target["id"], amount, user.name, f"From {source_label}", target_after, month
+        )
     result = {
         "amount": amount / 1000,
         "from": source_label,
@@ -304,6 +322,18 @@ async def _transfer_account_money(hass: HomeAssistant, call: ServiceCall) -> Ser
     return result
 
 
+async def _get_category_history(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
+    """Return a category's recorded balance changes, newest first.
+
+    Read-only, so it is open to anyone who can already see the balances.
+    """
+    coordinator, category = _resolve(hass, call.data["category"], "categories")
+    return {
+        "category": category["name"],
+        "changes": coordinator.ledger.entries(category["id"], call.data["limit"]),
+    }
+
+
 def async_register_services(hass: HomeAssistant) -> None:
     """Register the money movement services once for the integration."""
     if hass.services.has_service(DOMAIN, SERVICE_MOVE_CATEGORY_MONEY):
@@ -321,6 +351,16 @@ def async_register_services(hass: HomeAssistant) -> None:
         move_category_money,
         schema=MOVE_CATEGORY_MONEY_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+    async def get_category_history(call: ServiceCall) -> ServiceResponse:
+        return await _get_category_history(hass, call)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_CATEGORY_HISTORY,
+        get_category_history,
+        schema=GET_CATEGORY_HISTORY_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(
         DOMAIN,

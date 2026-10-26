@@ -38,6 +38,20 @@
       }
     },
     "services": {
+      "get_category_history": {
+        "name": "Get category history",
+        "description": "Return the recorded changes to a category's balance, newest first, with the reason for each where known.",
+        "fields": {
+          "category": {
+            "name": "Category",
+            "description": "Category sensor to read the history of."
+          },
+          "limit": {
+            "name": "Limit",
+            "description": "Most changes to return."
+          }
+        }
+      },
       "move_category_money": {
         "name": "Move category money",
         "description": "Reassign money between two YNAB categories for the current month, like moving money in the YNAB app. Only users allowed in the integration options can call it.",

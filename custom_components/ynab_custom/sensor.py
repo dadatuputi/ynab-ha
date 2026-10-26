@@ -466,6 +466,14 @@ class YNABCategorySensor(CoordinatorEntity, SensorEntity):
             ),
             "hidden": self.category.get("hidden", False),
         })
+
+        # Why the balance last changed. Being attributes, they are recorded
+        # with each state change, so the history shows the reason beside the
+        # balance; the full record is in the ledger.
+        if category_name not in READY_TO_ASSIGN_NAMES:
+            recent = self.coordinator.ledger.recent(self.category["id"])
+            attributes["last_change"] = recent[0] if recent else None
+            attributes["recent_changes"] = recent
         
         return attributes
 

@@ -210,6 +210,27 @@ data:
 
 Both services return the result (amount, from, to, new balances or the transaction id) and fire a `ynab_custom_money_moved` event naming the user, which can be used for notifications or a logbook entry.
 
+### Category history
+
+The integration keeps a permanent record of every change to each selected category's balance, with the reason where it can tell:
+
+- **move**: made with `move_category_money`, naming the Home Assistant user who made it
+- **assigned**: money assigned or unassigned in YNAB itself
+- **spending** / **inflow**: transactions, naming the payees
+- **adjustment**: anything else, such as a transaction dated in an earlier month or the month rollover
+
+Each category sensor carries `last_change` and `recent_changes` (the latest 5) as attributes, so the history graph shows the reason beside each balance change. The full record lives in Home Assistant's `.storage` (kept through restarts and included in backups, unaffected by the recorder purge) and is read with:
+
+```yaml
+action: ynab_custom.get_category_history
+data:
+  category: sensor.kid_savings_ynab_law
+  limit: 50
+response_variable: history
+```
+
+Changes are seen at each poll, so several changes between two polls are grouped by kind. Recording starts when this version is installed; earlier changes are not backfilled.
+
 ---
 
 ## 🛠 Issues & Support
