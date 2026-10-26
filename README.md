@@ -47,6 +47,7 @@
 - **Category Sensors**: Track each category’s balances and associated attributes.
 - **Custom Budget “Instance Name”**: Each budget can have a unique prefix (e.g., “Mel,” “Jamie”) to avoid entity ID collisions. (Defaults to the YNAB budget name)
 - **Currency Selection**: Choose your preferred currency (USD, EUR, etc.).
+- **Move Money**: Permissioned services to move money between categories or transfer between accounts, limited to the Home Assistant users you choose.
 - **Monthly Summary Sensors**: Retrieve current month's summary data with associated attributes (e.g., `Budgeted`, `Activity`, `To Be Budgeted`, `Age of Money`).
 
 ---
@@ -176,6 +177,38 @@ The **Monthly Summary sensor**, located under the **Extras** device, provides an
 - **Uncleared Transactions** – Still-pending transactions from active accounts
 - **Overspent Categories** – Categories that went negative this month
 - **Needs Attention Count** – A quick 0–3 score based on how many of the above are true
+
+---
+
+## 💸 Moving Money (Services)
+
+Two services change your budget from Home Assistant. They are locked to the people you pick under **Configure → Users allowed to move money** for each budget. The list starts empty, so nobody can move money until you add someone. Calls with no signed-in user behind them, such as automations, are always refused.
+
+### `ynab_custom.move_category_money`
+
+Reassigns money between two categories for the current month, the same as moving money in the YNAB app. No transaction is created. Leave `from_category` or `to_category` empty (or pick the Ready to Assign sensor) to move from or to Ready to Assign. It refuses to take more than the source has available unless `allow_overdraw` is set.
+
+```yaml
+action: ynab_custom.move_category_money
+data:
+  from_category: sensor.allowance_ynab_law
+  to_category: sensor.kid_savings_ynab_law
+  amount: 5
+```
+
+### `ynab_custom.transfer_account_money`
+
+Creates a YNAB transfer between two accounts. A transfer between an on-budget and a tracking account needs a `category` for the on-budget side. The memo defaults to who moved the money.
+
+```yaml
+action: ynab_custom.transfer_account_money
+data:
+  from_account: sensor.checking_ynab_law
+  to_account: sensor.kid_cash_ynab_law
+  amount: 10
+```
+
+Both services return the result (amount, from, to, new balances or the transaction id) and fire a `ynab_custom_money_moved` event naming the user, which can be used for notifications or a logbook entry.
 
 ---
 
